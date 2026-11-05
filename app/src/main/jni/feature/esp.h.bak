@@ -1,0 +1,392 @@
+#include "class.h"
+#include "monster.h"
+#include <cmath>
+#include <string>
+
+bool Line;
+bool Box;
+bool Health;
+bool PlayerName;
+bool HeroName;
+bool IconAlert;
+
+bool MinionDot;
+bool MonsterBox;
+bool MonsterHealth;
+bool JungleDot;
+bool MonsterName;
+
+bool SkillCD;
+bool SpellCD;
+
+// [ CONFIG & CAMERA ]
+float SetFieldOfView = 0;
+void* get_main() { static auto f = (void*(*)())Camera_get_main; return f ? f() : nullptr; }
+Vector3 WorldToScreen(Vector3 p) { static auto f = (Vector3(*)(void*, Vector3))Camera_WorldToScreenPoint; void* c = get_main(); return (f && c) ? f(c, p) : Vector3{0,0,0}; }
+float get_FOV() { static auto f = (float(*)(void*))Camera_get_fieldOfView; void* c = get_main(); return (f && c) ? f(c) : 0.0f; }
+void set_FOV(float v) { static auto f = (void(*)(void*, float))Camera_set_fieldOfView; void* c = get_main(); if (f && c) f(c, v); }
+
+// [ SYSTEMS & MATH ]
+void DroneView() {
+    static float Def = 0; float cur = get_FOV(); if (Def == 0 && cur > 0) Def = cur; if (Def == 0) return;
+    float tar = (SetFieldOfView > 0) ? (Def + SetFieldOfView) : Def;
+    if (std::abs(cur - tar) > 0.1f) set_FOV(tar);
+}
+
+bool isOutside(ImVec2 p, ImVec2 s) { return (p.x < 0 || p.x > s.x || p.y < 0 || p.y > s.y); }
+
+ImVec2 getPosVec2(Vector3 p, int w, int h) {
+    Vector3 v = WorldToScreen(p);
+    return (v.z > 0) ? ImVec2(v.x, (float)h - v.y) : ImVec2((float)w - v.x, (float)h + v.y);
+}
+
+ImVec2 pushToBorder(Vector3 p, ImVec2 s, float pad) {
+    Vector3 v = WorldToScreen(p); float x = v.x, y = v.y; if (v.z < 0) { x = s.x - x; y = s.y - y; }
+    float cX = s.x/2, cY = s.y/2, ang = atan2f(y-cY, x-cX), cA = cosf(ang), sA = sinf(ang);
+    float m = sA/cA, sX = cX-pad, sY = cY-pad;
+    if (cA > 0) { x = sX; y = m*sX; } else { x = -sX; y = m*-sX; }
+    if (y > sY) { y = sY; x = sY/m; } else if (y < -sY) { y = -sY; x = -sY/m; }
+    return ImVec2(x + cX, y + cY);
+}
+
+// [ DRAWING ]
+void DrawHealth(ImVec2 p, int h, int m, float r) {
+    if (m <= 0) return;
+    ImU32 col = (h <= m*0.3f) ? IM_COL32(255,55,55,255) : (h <= m*0.6f) ? IM_COL32(180,180,45,255) : IM_COL32(75,205,75,255);
+    float start = -1.570796f, end = start + (6.283185f * ((float)h/(float)m));
+    ImGui::GetForegroundDrawList()->PathArcTo(p, r, start, end, 32);
+    ImGui::GetForegroundDrawList()->PathStroke(col, 0, 3.5f);
+}
+
+struct CooldownValues {
+    int skillCount;
+    int skill1;
+    int skill2;
+    int skill3;
+    int skill4;
+    int spell;
+};
+
+CooldownValues getPlayerCoolDown(int keys, uintptr_t values) {
+    
+    auto logicFighter = GetPlayerLogic((uint)keys);
+    if (!logicFighter) return {0, 0, 0, 0, 0, 0};
+    
+    auto m_SkillComp = *(uintptr_t *) ((uintptr_t)logicFighter + LogicFighter_m_SkillComp);
+    if (!m_SkillComp) return {0, 0, 0, 0, 0, 0};
+    
+    auto m_CoolDownComp = *(uintptr_t *) ((uintptr_t)m_SkillComp + LogicSkillComp_m_CoolDownComp);
+    if (!m_CoolDownComp) return {0, 0, 0, 0, 0, 0};
+    
+    auto m_OwnSkillComp = *(uintptr_t *) ((uintptr_t)values + ShowEntity_m_OwnSkillComp);
+    if (!m_OwnSkillComp) return {0, 0, 0, 0, 0, 0};
+    
+    int skillCount = 0, skill1 = 0, skill2 = 0, skill3 = 0, skill4 = 0, spell = 0;
+
+    Dictionary<int, List<int> *> *skillUseTypeList = *(Dictionary<int, List<int> *> **) ((uintptr_t)m_OwnSkillComp + ShowOwnSkillComp_skillUseTypeList);
+    if (!skillUseTypeList) return {0, 0, 0, 0, 0, 0};
+    
+    for (int v = 0; v < skillUseTypeList->getNumKeys(); v++) {
+        auto keysskillUseType = skillUseTypeList->getKeys()[v];
+        auto valuesskillUseType = skillUseTypeList->getValues()[v];
+        if (!keysskillUseType) continue;
+        if (keysskillUseType != 1) continue;
+        
+        skillCount = valuesskillUseType->getSize();
+        List<uintptr_t> *m_SkillList = *(List<uintptr_t> **) ((uintptr_t)m_OwnSkillComp + ShowOwnSkillComp_m_SkillList);
+        if (!m_SkillList) return {0, 0, 0, 0, 0, 0};
+        
+        for (int i = 0; i < 5; i++) {
+            auto p_SkillList = m_SkillList->getItems()[i];
+            if (!p_SkillList) continue;
+            
+            auto m_TranID = *(int *) ((uintptr_t)p_SkillList + ShowSkillData_m_TranID);
+            auto m_DicCoolInfo = *(Dictionary<int, uintptr_t> **) ((uintptr_t)m_CoolDownComp + CoolDownComp_m_DicCoolInfo);
+            if (!m_DicCoolInfo) continue;
+            
+            for (int l = 0; l < m_DicCoolInfo->getNumKeys(); l++) {
+                auto keysCool = m_DicCoolInfo->getKeys()[l];
+                auto valuesCool = m_DicCoolInfo->getValues()[l];
+                if (!keysCool || !valuesCool) continue;
+                
+                auto m_iSummonSkillId = *(int *) ((uintptr_t)values + ShowPlayer_m_iSummonSkillId);
+                int coolTime = GetCoolTime((void*)valuesCool) / 1000;
+                if (keysCool == m_iSummonSkillId) spell = coolTime;
+                if ((int)m_TranID != keysCool) continue;
+                
+                if (i == 1) skill1 = coolTime;
+                if (i == 2) skill2 = coolTime;
+                if (i == 3) skill3 = coolTime;
+                if (i == 4) skill4 = coolTime;
+            }
+        }
+    }
+    return {skillCount, skill1, skill2, skill3, skill4, spell};
+}
+
+void DrawESP(ImDrawList *draw, float screenWidth, float screenHeight) {
+    // 1. INITIALIZATION & VALIDATION
+    void *BattleBridge_Instance = nullptr;
+    Il2CppGetStaticFieldValue("Assembly-CSharp.dll", "", "BattleData", "m_BattleBridge", &BattleBridge_Instance);
+    
+    if (!BattleBridge_Instance) return;
+
+    auto getter = reinterpret_cast<bool (__fastcall*)(void*)>(BattleBridge_get_bStartBattle);
+    if (!getter || !getter(BattleBridge_Instance)) return;
+
+    DroneView();
+
+    auto battleManager = *(uintptr_t *)((uintptr_t)BattleData_battleManager);
+    if (!battleManager) return;
+
+    auto m_LocalPlayerShow = *(uintptr_t *)((uintptr_t)battleManager + BattleManager_m_LocalPlayerShow);
+    if (!m_LocalPlayerShow) return;
+
+    // 2. GET DICTIONARIES
+    auto m_dicPlayerShow = *(Dictionary<int, uintptr_t> **)((uintptr_t)battleManager + BattleManager_m_dicPlayerShow);
+    auto m_dicMonsterShow = *(Dictionary<int, uintptr_t> **)((uintptr_t)battleManager + BattleManager_m_dicMonsterShow);
+
+    // RGB Glow for Line & Dot only
+    float time = ImGui::GetTime() * 2.0f;
+    ImU32 rgbCol = IM_COL32((int)(sinf(time)*127+128), (int)(sinf(time+2.094f)*127+128), (int)(sinf(time+4.188f)*127+128), 255);
+
+    auto selfPos = *(Vector3 *)((uintptr_t)m_LocalPlayerShow + ShowEntity__Position);
+    auto selfPosVec2 = getPosVec2(selfPos, screenWidth, screenHeight);
+
+    // --- 3. MONSTER & MINION LOOP (NO MCOUNT) ---
+    if (m_dicMonsterShow) {
+        for (int i = 0; i < m_dicMonsterShow->getNumKeys(); i++) {
+            auto mValues = m_dicMonsterShow->getValues()[i];
+            if (!mValues) continue;
+
+            if (*(bool *)((uintptr_t)mValues + EntityBase_m_bDeath)) continue;
+            if (*(bool *)((uintptr_t)mValues + EntityBase_m_bSameCampType)) continue;
+
+            int monsterType = *(int *)((uintptr_t)mValues + EntityBase_m_iType);
+            
+            if (monsterType == 2 || monsterType == 5) {
+                auto mPos = *(Vector3 *)((uintptr_t)mValues + ShowEntity__Position);
+                auto mPosVec2 = getPosVec2(mPos, screenWidth, screenHeight);
+
+                if (MonsterName) {
+                    int m_ID = *(int *)((uintptr_t)mValues + EntityBase_m_ID);
+                    std::string mName = MonsterToString(m_ID);
+                    draw->AddText(NULL, 39.0f, {mPosVec2.x, mPosVec2.y - 45}, IM_COL32(255, 255, 0, 255), mName.c_str());
+                }
+
+                if (JungleDot) {
+                    draw->AddCircleFilled(mPosVec2, 6.0f, rgbCol); 
+                    draw->AddCircle(mPosVec2, 10.5f, IM_COL32(255, 255, 255, 200));
+                }
+
+                if (MonsterBox) {
+                    float bH = screenHeight / 15.0f, bW = bH, lLen = bW * 0.35f;
+                    ImVec2 tL = {mPosVec2.x - bW/2, mPosVec2.y - bH}, bR = {mPosVec2.x + bW/2, mPosVec2.y};
+                    draw->AddLine(tL, {tL.x + lLen, tL.y}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine(tL, {tL.x, tL.y + lLen}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine({bR.x, tL.y}, {bR.x - lLen, tL.y}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine({bR.x, tL.y}, {bR.x, tL.y + lLen}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine({tL.x, bR.y}, {tL.x + lLen, bR.y}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine({tL.x, bR.y}, {tL.x, bR.y - lLen}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine(bR, {bR.x - lLen, bR.y}, IM_COL32(255, 255, 255, 255), 2.0f);
+                    draw->AddLine(bR, {bR.x, bR.y - lLen}, IM_COL32(255, 255, 255, 255), 2.0f);
+                }
+
+                if (MonsterHealth) {
+                    int mCurHP = *(int *)((uintptr_t)mValues + EntityBase_m_Hp), mMaxHP = *(int *)((uintptr_t)mValues + EntityBase_m_HpMax);
+                    if (mMaxHP > 0) {
+                        float bW = 90.0f, bH = 14.0f, hpP = (float)mCurHP / (float)mMaxHP;
+                        ImVec2 bgS = {mPosVec2.x - bW/2, mPosVec2.y + 10}, bgE = {mPosVec2.x + bW/2, mPosVec2.y + 10 + bH};
+                        ImU32 hpCol = (hpP >= 0.7f) ? IM_COL32(0, 255, 0, 255) : (hpP >= 0.3f) ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 0, 0, 255);
+                        draw->AddRectFilled(bgS, bgE, IM_COL32(0, 0, 0, 180));
+                        draw->AddRectFilled(bgS, {bgS.x + (bW * hpP), bgE.y}, hpCol);
+                        draw->AddRect(bgS, bgE, IM_COL32(255, 255, 255, 255));
+                    }
+                }
+            }
+            else if (MinionDot && monsterType == 1) {
+                auto mPos = *(Vector3 *)((uintptr_t)mValues + ShowEntity__Position);
+                auto mPosVec2 = getPosVec2(mPos, screenWidth, screenHeight);
+                draw->AddCircleFilled(mPosVec2, 15.0f, IM_COL32(0, 255, 255, 200)); 
+            }
+        }
+    }
+
+    // --- 4. PLAYER LOOP (NO MCOUNT) ---
+    if (m_dicPlayerShow) {
+        for (int i = 0; i < m_dicPlayerShow->getNumKeys(); i++) {
+            auto values = m_dicPlayerShow->getValues()[i];
+            if (!values || (uintptr_t)values == m_LocalPlayerShow) continue;
+
+            if (*(bool *)((uintptr_t)values + EntityBase_m_bDeath)) continue;
+            if (*(bool *)((uintptr_t)values + EntityBase_m_bSameCampType)) continue;
+
+            auto __Pos = *(Vector3 *)((uintptr_t)values + ShowEntity__Position);
+            auto rPos = getPosVec2(__Pos, screenWidth, screenHeight);
+            auto hPos = Vector2(rPos.x, rPos.y - (screenHeight / 6.35));
+
+            float boxHeight = abs(hPos.y - rPos.y);
+            float halfWidth = (boxHeight * 0.60f) / 2.0f;
+
+            // --- HERO & PLAYER NAME (RIGHT ALIGN & SOLID WHITE) ---
+            if (PlayerName || HeroName) {
+                auto *m_HeroName = *(String **) ((uintptr_t)values + ShowPlayer_m_HeroName);
+                auto *m_RoleName = *(String **) ((uintptr_t)values + ShowEntity_m_RoleName);
+                
+                std::string displayInfo = "";
+                if (HeroName && m_HeroName) displayInfo += m_HeroName->toString();
+                if (PlayerName && m_RoleName) displayInfo += "\n" + m_RoleName->toString();
+
+                // Pinalaki (20.0f) at inilagay sa kanan (halfWidth + 12px padding)
+                draw->AddText(NULL, 39.0f, {hPos.x + halfWidth + 12.0f, hPos.y}, IM_COL32(255, 255, 255, 255), displayInfo.c_str());
+            }
+
+            if (Line) {
+                draw->AddLine(selfPosVec2, rPos, rgbCol, 1.5f);
+                draw->AddCircleFilled(rPos, 5.0f, rgbCol);
+            }
+
+            if (Box) {
+                float lLen = halfWidth * 0.6f;
+                ImVec2 tL = {hPos.x - halfWidth, hPos.y}, bR = {hPos.x + halfWidth, rPos.y};
+                draw->AddLine(tL, {tL.x + lLen, tL.y}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine(tL, {tL.x, tL.y + lLen}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine({bR.x, tL.y}, {bR.x - lLen, tL.y}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine({bR.x, tL.y}, {bR.x, tL.y + lLen}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine({tL.x, bR.y}, {tL.x + lLen, bR.y}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine({tL.x, bR.y}, {tL.x, bR.y - lLen}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine(bR, {bR.x - lLen, bR.y}, IM_COL32(255, 255, 255, 255), 2.5f);
+                draw->AddLine(bR, {bR.x, bR.y - lLen}, IM_COL32(255, 255, 255, 255), 2.5f);
+            }
+
+            if (Health) {
+                int pCur = *(int *)((uintptr_t)values + EntityBase_m_Hp), pMax = *(int *)((uintptr_t)values + EntityBase_m_HpMax);
+                if (pMax > 0) {
+                    float bH = 16.0f, hpP = (float)pCur / (float)pMax;
+                    ImVec2 bgS = {rPos.x - halfWidth, rPos.y + 12}, bgE = {rPos.x + halfWidth, rPos.y + 12 + bH};
+                    ImU32 hpCol = (hpP >= 0.7f) ? IM_COL32(0, 255, 0, 255) : (hpP >= 0.3f) ? IM_COL32(255, 255, 0, 255) : IM_COL32(255, 0, 0, 255);
+                    draw->AddRectFilled(bgS, bgE, IM_COL32(0, 0, 0, 180));
+                    draw->AddRectFilled(bgS, {bgS.x + ((halfWidth * 2) * hpP), bgE.y}, hpCol);
+                    draw->AddRect(bgS, bgE, IM_COL32(255, 255, 255, 255));
+                    
+                    char buf[16]; sprintf(buf, "%.0f%%", hpP * 100);
+                    ImVec2 tS = ImGui::CalcTextSize(buf);
+                    draw->AddText(NULL, 15.0f, {rPos.x - (tS.x/2), bgS.y + (bH/2) - (tS.y/2)}, IM_COL32(255, 255, 255, 255), buf);
+             
+            if (SkillCD || SpellCD) {
+            auto coolDownData = getPlayerCoolDown(keys, values);
+            if (SkillCD) {
+                if (coolDownData.skill1) {
+                    
+                    std::string strCoolDown = to_string(coolDownData.skill1);
+                    auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                    draw->AddText(NULL, 30, ImVec2(selfPosVec2.x + 55 - (textSize.x / 2), selfPosVec2.y - 30), IM_COL32(255, 255, 0, 255), strCoolDown.c_str());
+                } else {
+                    
+                    draw->AddCircleFilled(ImVec2(selfPosVec2.x + 55, rootPosVec2.y - 15), 10, IM_COL32(255, 255, 0, 255));
+                }
+                
+                if (coolDownData.skill2) {
+                    std::string strCoolDown = to_string(coolDownData.skill2);
+                    auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                    draw->AddText(NULL, 30, ImVec2(selfPosVec2.x + 55 + (40 * 1) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(255, 255, 0, 255), strCoolDown.c_str());
+                } else {
+                    
+                    draw->AddCircleFilled(ImVec2(selfPosVec2.x + 55 + (40 * 1), rootPosVec2.y - 15), 10, IM_COL32(255, 255, 0, 255));
+                }
+                
+                if (coolDownData.skill3) {
+                    std::string strCoolDown = to_string(coolDownData.skill3);
+                    auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                    draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 + (40 * 2) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(255, 255, 0, 255), strCoolDown.c_str());
+                } else {
+                    draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55 + (40 * 2), rootPosVec2.y - 15), 10, IM_COL32(255, 255, 0, 255));
+                }
+            }
+            
+            if (coolDownData.skillCount >= 4) {
+                if (SkillCD && SpellCD) {
+                    if (coolDownData.skill4) {
+                        std::string strCoolDown = to_string(coolDownData.skill4);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 + (40 * 3) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(255, 255, 0, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55 + (40 * 3), rootPosVec2.y - 15), 10, IM_COL32(255, 255, 0, 255));
+                    }
+                    
+                    if (coolDownData.spell) {
+                        std::string strCoolDown = to_string(coolDownData.spell);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 + (40 * 4) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(30, 144, 255, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55 + (40 * 4), rootPosVec2.y - 15), 10, IM_COL32(30, 144, 255, 255));
+                    }
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 225, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                } else if (SkillCD) {
+                    if (coolDownData.skill4) {
+                        
+                        std::string strCoolDown = to_string(coolDownData.skill4);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 + (40 * 3) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(255, 255, 0, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55 + (40 * 3), rootPosVec2.y - 15), 10, IM_COL32(255, 255, 0, 255));
+                    }
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 185, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                } else if (SpellCD) {
+                    if (coolDownData.spell) {
+                        
+                        std::string strCoolDown = to_string(coolDownData.spell);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(30, 144, 255, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55, rootPosVec2.y - 15), 10, IM_COL32(30, 144, 255, 255));
+                    }
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 65, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                }
+                
+            } else if (coolDownData.skillCount == 3) {
+                if (SkillCD && SpellCD) {
+                    if (coolDownData.spell) {
+                        
+                        std::string strCoolDown = to_string(coolDownData.spell);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 + (40 * 3) - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(30, 144, 255, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55 + (40 * 3), rootPosVec2.y - 15), 10, IM_COL32(30, 144, 255, 255));
+                    }
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 185, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                } else if (SkillCD) {
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 145, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                } else if (SpellCD) {
+                    if (coolDownData.spell) {
+                        
+                        std::string strCoolDown = to_string(coolDownData.spell);
+                        auto textSize = ImGui::CalcTextSize(strCoolDown.c_str(), 0, 30);
+                        draw->AddText(NULL, 30, ImVec2(rootPosVec2.x + 55 - (textSize.x / 2), rootPosVec2.y - 30), IM_COL32(30, 144, 255, 255), strCoolDown.c_str());
+                    } else {
+                        
+                        draw->AddCircleFilled(ImVec2(rootPosVec2.x + 55, rootPosVec2.y - 15), 10, IM_COL32(30, 144, 255, 255));
+                    }
+                    
+                    draw->AddLine(rootPosVec2, ImVec2(rootPosVec2.x + 65, rootPosVec2.y), IM_COL32(255, 255, 255, 255));
+                }
+            }
+        }
+    }
+}
+               
+                }
+            }
+        }
+    }
+}
